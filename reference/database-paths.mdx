@@ -1,0 +1,220 @@
+---
+title: "Database Paths"
+description: "SQLite database locations and schema reference for iMessage, Mail, and Contacts"
+---
+
+<Warning>
+  All three databases are protected by macOS. You must grant **Full Disk Access** to your terminal application in **System Settings → Privacy & Security → Full Disk Access** before the skill can query them.
+</Warning>
+
+## Database Locations
+
+| Database | Path | Contains |
+|----------|------|----------|
+| Messages | `~/Library/Messages/chat.db` | iMessage/SMS history, attachments, handles |
+| Mail | `~/Library/Mail/V10/MailData/Envelope Index` | Email metadata, senders, subjects, mailboxes |
+| Contacts | `~/Library/Application Support/AddressBook/AddressBook-v22.abcddb` | Names, phone numbers, email addresses |
+
+<Note>
+  The Mail database (`Envelope Index`) is a SQLite file without a `.db` extension. Always quote the path when passing it to `sqlite3`.
+</Note>
+
+---
+
+## Messages Database — `chat.db`
+
+Path: `~/Library/Messages/chat.db`
+
+This database contains all iMessage and SMS history synced through Messages.app.
+
+### Key Tables
+
+**`message`** — Core message records
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ROWID` | INTEGER | Primary key |
+| `handle_id` | INTEGER | FK to `handle.ROWID` |
+| `text` | TEXT | Plain text content (may be NULL for rich text) |
+| `attributedBody` | BLOB | NSAttributedString binary blob (rich text messages) |
+| `date` | INTEGER | Timestamp in nanoseconds since Cocoa epoch (Jan 1, 2001) |
+| `is_from_me` | INTEGER | `1` if sent by the user, `0` if received |
+| `associated_message_type` | INTEGER | Tapback reaction type (0 = not a reaction) |
+| `associated_message_guid` | TEXT | GUID of the message this is a reaction to |
+
+**`handle`** — Contacts/phone numbers
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ROWID` | INTEGER | Primary key |
+| `id` | TEXT | Phone number (e.g., `+15551234567`) or email handle |
+| `service` | TEXT | `iMessage` or `SMS` |
+
+**`attachment`** — File attachments
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ROWID` | INTEGER | Primary key |
+| `filename` | TEXT | Path to file (may start with `~/Library/Messages/Attachments/`) |
+| `mime_type` | TEXT | e.g., `image/jpeg`, `video/mp4`, `application/pdf` |
+| `total_bytes` | INTEGER | File size in bytes |
+
+**`message_attachment_join`** — Links messages to attachments
+
+| Column | Description |
+|--------|-------------|
+| `message_id` | FK to `message.ROWID` |
+| `attachment_id` | FK to `attachment.ROWID` |
+
+**`chat`** — Conversations (including group chats)
+
+| Column | Description |
+|--------|-------------|
+| `ROWID` | Primary key |
+| `display_name` | Group chat name (NULL for 1:1 chats) |
+| `chat_identifier` | Phone number or group ID |
+
+---
+
+## Mail Database — `Envelope Index`
+
+Path: `~/Library/Mail/V10/MailData/Envelope Index`
+
+Stores email metadata for all accounts configured in Apple Mail. Does **not** store email body text — bodies are stored in `.emlx` files on disk.
+
+### Key Tables
+
+**`messages`** — Core email records
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ROWID` | INTEGER | Primary key |
+| `sender` | INTEGER | FK to `addresses.ROWID` |
+| `subject` | INTEGER | FK to `subjects.ROWID` |
+| `mailbox` | INTEGER | FK to `mailboxes.ROWID` |
+| `date_received` | INTEGER | Unix timestamp (seconds since Jan 1, 1970) |
+| `date_sent` | INTEGER | Unix timestamp |
+| `read` | INTEGER | `1` = read, `0` = unread |
+| `flagged` | INTEGER | `1` = flagged |
+| `deleted` | INTEGER | `1` = deleted/trashed |
+| `size` | INTEGER | Message size in bytes |
+| `summary` | INTEGER | FK to `summaries.ROWID` (AI summary, if available) |
+
+**`addresses`** — Sender and recipient addresses
+
+| Column | Description |
+|--------|-------------|
+| `ROWID` | Primary key |
+| `address` | Email address |
+| `comment` | Display name |
+
+**`subjects`** — Deduplicated subject lines
+
+| Column | Description |
+|--------|-------------|
+| `ROWID` | Primary key |
+| `subject` | Subject text |
+
+**`mailboxes`** — Mailbox folders
+
+| Column | Description |
+|--------|-------------|
+| `ROWID` | Primary key |
+| `url` | Mailbox path, e.g., `imap://user@host/INBOX` |
+| `total_count` | Total messages |
+| `unread_count` | Unread messages |
+
+**`recipients`** — To/CC/BCC recipients per message
+
+| Column | Description |
+|--------|-------------|
+| `message` | FK to `messages.ROWID` |
+| `address` | FK to `addresses.ROWID` |
+| `type` | `0` = To, `1` = CC, `2` = BCC |
+| `position` | Order among recipients of same type |
+
+**`attachments`** — Email attachments
+
+| Column | Description |
+|--------|-------------|
+| `message` | FK to `messages.ROWID` |
+| `name` | Filename |
+
+**`summaries`** — AI-generated email summaries
+
+| Column | Description |
+|--------|-------------|
+| `ROWID` | Primary key |
+| `summary` | Summary text |
+
+---
+
+## Contacts Database — `AddressBook-v22.abcddb`
+
+Path: `~/Library/Application Support/AddressBook/AddressBook-v22.abcddb`
+
+Stores the macOS Address Book. Used by the skill to resolve phone numbers and email addresses to human-readable names.
+
+### Key Tables
+
+**`ZABCDRECORD`** — Contact records
+
+| Column | Description |
+|--------|-------------|
+| `Z_PK` | Primary key |
+| `ZFIRSTNAME` | First name |
+| `ZLASTNAME` | Last name |
+
+**`ZABCDPHONENUMBER`** — Phone numbers
+
+| Column | Description |
+|--------|-------------|
+| `ZOWNER` | FK to `ZABCDRECORD.Z_PK` |
+| `ZFULLNUMBER` | Full phone number string |
+
+**`ZABCDEMAILADDRESS`** — Email addresses
+
+| Column | Description |
+|--------|-------------|
+| `ZOWNER` | FK to `ZABCDRECORD.Z_PK` |
+| `ZADDRESS` | Email address |
+
+### Example Contact Lookup
+
+Look up a contact by last 7 digits of a phone number (to handle formatting differences):
+
+```sql
+SELECT ZFIRSTNAME, ZLASTNAME
+FROM ZABCDRECORD AS T1
+INNER JOIN ZABCDPHONENUMBER AS T2 ON T1.Z_PK = T2.ZOWNER
+WHERE T2.ZFULLNUMBER LIKE '%1234567'
+LIMIT 1;
+```
+
+---
+
+## Timestamp Reference
+
+### iMessage — Mac CoreData (Cocoa) Epoch
+
+iMessage uses the **Mac CoreData epoch**: seconds since **January 1, 2001**. On recent macOS versions, `message.date` is stored in **nanoseconds**.
+
+To convert to a human-readable local time in SQLite:
+
+```sql
+datetime(m.date / 1000000000 + 978307200, 'unixepoch', 'localtime')
+```
+
+- `/ 1000000000` — converts nanoseconds to seconds
+- `+ 978307200` — adds the offset between the Cocoa epoch (Jan 1, 2001) and the Unix epoch (Jan 1, 1970)
+- `'unixepoch', 'localtime'` — interprets as Unix timestamp and converts to local time
+
+### Apple Mail — Unix Epoch
+
+Apple Mail uses the standard **Unix epoch**: seconds since **January 1, 1970**. No offset is required:
+
+```sql
+datetime(m.date_received, 'unixepoch', 'localtime')
+```
+
+The same applies to `date_sent`.

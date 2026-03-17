@@ -1,0 +1,189 @@
+---
+title: "AppleScript Reference"
+description: "How the skill uses AppleScript to send iMessages and emails via osascript"
+---
+
+## Overview
+
+The skill sends iMessages and emails by executing AppleScript through the `osascript` command-line tool. AppleScript controls **Messages.app** (for iMessages) and **Mail.app** (for emails) directly via macOS automation APIs — no third-party services or APIs are involved.
+
+<Note>
+  If Messages.app or Mail.app is not already running when a send command is executed, AppleScript will launch the application automatically.
+</Note>
+
+---
+
+## Sending iMessages
+
+### Basic iMessage Send
+
+Send a message to a phone number in E.164 format (e.g., `+13059651169`):
+
+```applescript
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "Hello from the skill" to targetBuddy
+end tell'
+```
+
+<Tip>
+  Always use E.164 format with country code for phone numbers. Strip parentheses, dashes, and spaces from user input before passing to AppleScript.
+</Tip>
+
+### Handling Single Quotes
+
+When the message text contains a single quote (e.g., `I'll be there`), the shell's single-quoted string must be escaped by ending the quote, inserting an escaped quote (`\'`), and reopening:
+
+```bash
+# Message: "I'll be there"
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "I'\''ll be there" to targetBuddy
+end tell'
+```
+
+### Using a Heredoc for Complex Messages
+
+For messages containing single quotes, double quotes, emojis, or other special characters, use a heredoc to avoid shell escaping issues entirely:
+
+```bash
+osascript <<'APPLESCRIPT'
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "Message with 'quotes' and \"double quotes\" and emojis 🎉" to targetBuddy
+end tell
+APPLESCRIPT
+```
+
+### iMessage to an Email Handle
+
+Some iMessage contacts use email addresses rather than phone numbers as their handle:
+
+```applescript
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "user@example.com" of targetService
+    send "Hello" to targetBuddy
+end tell'
+```
+
+### Emojis
+
+Emojis work natively in AppleScript strings — include them directly:
+
+```applescript
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "Hey! 🤖⚡🔥💻🚀✊" to targetBuddy
+end tell'
+```
+
+---
+
+## Sending Emails
+
+Emails are sent through Mail.app using whichever account is configured as the default.
+
+### Basic Email Send
+
+```applescript
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"Hello from skill", content:"Email body here", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"Jane Doe", address:"jane@example.com"}
+    end tell
+    send newMessage
+end tell'
+```
+
+### Reply to an Email Thread
+
+To reply within an existing thread, prefix the original subject with `Re:`. Mail.app threads it automatically:
+
+```applescript
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"Re: Project Update", content:"Thanks for the update!", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"Jane Doe", address:"jane@example.com"}
+    end tell
+    send newMessage
+end tell'
+```
+
+### CC and BCC
+
+Add CC and BCC recipients alongside the primary recipient:
+
+```applescript
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"Team Update", content:"See below.", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"Jane Doe", address:"jane@example.com"}
+        make new cc recipient at end of cc recipients with properties {name:"John Smith", address:"john@example.com"}
+        make new bcc recipient at end of bcc recipients with properties {name:"Manager", address:"mgr@example.com"}
+    end tell
+    send newMessage
+end tell'
+```
+
+### Multiple Recipients
+
+Add multiple `to recipient` blocks to send to several people at once:
+
+```applescript
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"Team Meeting", content:"See you at 3pm.", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"Jane Doe", address:"jane@example.com"}
+        make new to recipient at end of to recipients with properties {name:"John Smith", address:"john@example.com"}
+    end tell
+    send newMessage
+end tell'
+```
+
+---
+
+## Permissions
+
+### First-Time Permission Prompt
+
+When the skill sends its first iMessage or email, macOS will display a permission dialog asking whether to allow your terminal to control **Messages.app** or **Mail.app** via AppleScript. Click **Allow** — this is a one-time prompt per application.
+
+Once allowed, subsequent sends require no further user interaction.
+
+### Re-enabling Automation If Denied
+
+If the permission prompt was dismissed or denied, it will not appear again automatically. To re-enable it:
+
+1. Open **System Settings**
+2. Go to **Privacy & Security → Automation**
+3. Find your terminal app (Terminal.app, iTerm2, Warp, Ghostty, etc.)
+4. Enable the toggle for **Messages** and/or **Mail**
+
+---
+
+## Error Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Messages.app or Mail.app not running | AppleScript launches the app automatically |
+| Phone number not registered with iMessage | Send fails — skill informs user and suggests checking the number |
+| Mail.app has no configured accounts | Send fails — skill informs user to set up an account in Mail.app |
+| AppleScript returns no output, no error | Send was **successful** — this is normal behavior for `osascript` |
+| Automation permission denied | `osascript` returns a permission error — re-enable in System Settings |
+
+<Note>
+  A successful `osascript` send command produces no output. The absence of output (and no error exit code) confirms delivery.
+</Note>

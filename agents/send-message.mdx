@@ -1,0 +1,248 @@
+---
+title: "Send Messages"
+description: "Send iMessages and emails via AppleScript with a confirmation prompt"
+---
+
+The Send Message agent sends iMessages through Messages.app and emails through Mail.app using AppleScript (`osascript`), always showing you a confirmation preview before delivering.
+
+## When to Use
+
+This agent is triggered by send or reply intent:
+
+- "Send a text to John"
+- "Reply to Troy's email"
+- "Text +1234567890 saying..."
+- "Email jane@example.com about..."
+- "Tell them I'll be late"
+- "Respond to that message"
+
+**Usage patterns:**
+
+```
+/imessage-mail send a text to Mike saying I'm running late
+/imessage-mail text Sarah saying the meeting is pushed to 3pm
+/imessage-mail reply to John's email
+/imessage-mail email jane@example.com about the report
+```
+
+## Confirmation Flow
+
+<Warning>
+The agent **always** shows you the formatted message and asks for confirmation before sending. This prevents accidental messages. You can skip confirmation by explicitly saying "just send it" or "hit send".
+</Warning>
+
+### Before Sending
+
+```
+**Ready to send:**
+
+**Type:** iMessage / Email
+**To:** John Smith (+1234567890) / john@example.com
+**Subject:** Re: Project Update *(email only)*
+
+> Message body here
+
+Send this? (y/n)
+```
+
+### After Sending
+
+```
+Sent! iMessage delivered to John Smith (+1234567890):
+
+> Message body here
+```
+
+or
+
+```
+Sent! Email delivered via Mail.app to john@example.com:
+
+**Subject:** Re: Project Update
+> Message body here
+```
+
+## Sending iMessages
+
+### Resolve a Contact Name
+
+If the user provides a name instead of a phone number, the agent first resolves it from the Address Book:
+
+```sql
+SELECT T2.ZFULLNUMBER, T1.ZFIRSTNAME, T1.ZLASTNAME
+FROM ZABCDRECORD AS T1
+INNER JOIN ZABCDPHONENUMBER AS T2 ON T1.Z_PK = T2.ZOWNER
+WHERE LOWER(T1.ZFIRSTNAME) LIKE LOWER('%<name>%')
+   OR LOWER(T1.ZLASTNAME) LIKE LOWER('%<name>%')
+   OR LOWER(T1.ZFIRSTNAME || ' ' || T1.ZLASTNAME) LIKE LOWER('%<name>%');
+```
+
+If multiple contacts match, the agent presents the choices and asks you to select one.
+
+### Send a Basic iMessage
+
+Phone numbers must be in E.164 format (e.g., `+13059651169`). Parentheses, dashes, and spaces are stripped from user input.
+
+```bash
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "<phone_number>" of targetService
+    send "<message_text>" to targetBuddy
+end tell'
+```
+
+### Send to an Email Handle
+
+Some iMessage contacts use email addresses instead of phone numbers:
+
+```bash
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "<email>" of targetService
+    send "<message_text>" to targetBuddy
+end tell'
+```
+
+### Emojis
+
+Emojis work natively in AppleScript strings and can be included directly:
+
+```bash
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "Hey! 🤖⚡🔥💻🚀✊" to targetBuddy
+end tell'
+```
+
+### String Escaping
+
+When the message contains single quotes, escape them in the shell by ending the quote, inserting an escaped quote, and reopening:
+
+```bash
+# Message: "I'll be there"
+osascript -e '
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "I'\''ll be there" to targetBuddy
+end tell'
+```
+
+For messages with complex characters (quotes, special symbols), use a heredoc to avoid escaping issues:
+
+```bash
+osascript <<'APPLESCRIPT'
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+13059651169" of targetService
+    send "Message with 'quotes' and \"double quotes\" and emojis 🎉" to targetBuddy
+end tell
+APPLESCRIPT
+```
+
+## Sending Emails
+
+Emails are sent via Mail.app using the account configured as the default in Mail.app preferences.
+
+### Resolve an Email Address from a Contact Name
+
+```sql
+SELECT T2.ZADDRESS, T1.ZFIRSTNAME, T1.ZLASTNAME
+FROM ZABCDRECORD AS T1
+INNER JOIN ZABCDEMAILADDRESS AS T2 ON T1.Z_PK = T2.ZOWNER
+WHERE LOWER(T1.ZFIRSTNAME) LIKE LOWER('%<name>%')
+   OR LOWER(T1.ZLASTNAME) LIKE LOWER('%<name>%')
+   OR LOWER(T1.ZFIRSTNAME || ' ' || T1.ZLASTNAME) LIKE LOWER('%<name>%');
+```
+
+### Send a New Email
+
+```bash
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"<subject>", content:"<body>", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"<recipient_name>", address:"<recipient_email>"}
+    end tell
+    send newMessage
+end tell'
+```
+
+### Reply to an Email Thread
+
+Use `Re: <original_subject>` as the subject. Mail.app will thread it automatically:
+
+```bash
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"Re: <original_subject>", content:"<body>", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"<recipient_name>", address:"<recipient_email>"}
+    end tell
+    send newMessage
+end tell'
+```
+
+### Send with CC/BCC
+
+```bash
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"<subject>", content:"<body>", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"<to_name>", address:"<to_email>"}
+        make new cc recipient at end of cc recipients with properties {name:"<cc_name>", address:"<cc_email>"}
+        make new bcc recipient at end of bcc recipients with properties {name:"<bcc_name>", address:"<bcc_email>"}
+    end tell
+    send newMessage
+end tell'
+```
+
+### Send to Multiple Recipients
+
+```bash
+osascript -e '
+tell application "Mail"
+    set newMessage to make new outgoing message with properties {subject:"<subject>", content:"<body>", visible:false}
+    tell newMessage
+        make new to recipient at end of to recipients with properties {name:"<name1>", address:"<email1>"}
+        make new to recipient at end of to recipients with properties {name:"<name2>", address:"<email2>"}
+    end tell
+    send newMessage
+end tell'
+```
+
+## Handling Replies in Context
+
+When you say "reply to that" or "respond to them" after reading a conversation or email, the agent uses the already-known contact details:
+
+1. The contact's phone number or email and thread subject are already in context
+2. For email replies, `Re: ` is prepended to the subject if not already present
+3. For iMessage replies, the message is sent to the same handle that was being viewed
+
+## Error Handling
+
+<Accordion title="Messages.app or Mail.app is not running">
+AppleScript will launch the application automatically. No action needed.
+</Accordion>
+
+<Accordion title="Phone number not registered with iMessage">
+The send will fail. The agent will inform you and suggest checking the number or trying SMS if available.
+</Accordion>
+
+<Accordion title="Mail.app has no configured accounts">
+The send will fail. Set up an email account in Mail.app (System Settings → Internet Accounts, or Mail → Add Account).
+</Accordion>
+
+<Accordion title="AppleScript returns no output and no error">
+This is normal. Successful sends produce no output from `osascript`.
+</Accordion>
+
+## Suggested Follow-ups
+
+- **Read context first** — use the Conversation Reader: "Want to see the conversation before replying?"
+- **Read the email thread** — use the Mail Reader: "Want to read the email thread before responding?"

@@ -1,0 +1,74 @@
+---
+title: "iMessage & Mail Skill"
+description: "A Claude Code skill for reading, searching, and sending iMessages and emails on macOS"
+---
+
+<img
+  className="block"
+  src="https://media.brand.dev/d6c060ec-2523-4c85-8154-1eb3bc30b0a5.svg"
+  alt="iMessage & Mail Skill"
+  style={{ maxWidth: "200px", marginBottom: "2rem" }}
+/>
+
+# iMessage & Mail Skill
+
+A [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill that gives Claude direct access to your iMessages and Apple Mail on macOS. Query your message history, search across conversations, find attachments, and send messages — all through natural language, all running locally on your Mac.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Install the skill and send your first message in minutes
+  </Card>
+  <Card title="Requirements" icon="list-check" href="/requirements">
+    macOS setup, permissions, and prerequisites
+  </Card>
+  <Card title="Agent Reference" icon="robot" href="/agents/recent-activity">
+    Explore each agent and what it can do
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/reference/architecture">
+    How the skill routes requests and queries databases
+  </Card>
+</CardGroup>
+
+## What you can do
+
+<CardGroup cols={2}>
+  <Card title="Recent Activity" icon="clock" href="/agents/recent-activity">
+    See who texted or emailed you, with message previews and unread counts
+  </Card>
+  <Card title="Conversation Reader" icon="messages" href="/agents/conversation-reader">
+    Read full iMessage and email history for any contact
+  </Card>
+  <Card title="Message Search" icon="magnifying-glass" href="/agents/message-search">
+    Full-text search across all iMessage conversations and Apple Mail
+  </Card>
+  <Card title="Attachment Finder" icon="paperclip" href="/agents/attachment-finder">
+    Find photos, videos, PDFs, and other files shared in messages
+  </Card>
+  <Card title="Mail Reader" icon="envelope" href="/agents/mail-reader">
+    Browse, search, and read Apple Mail emails directly
+  </Card>
+  <Card title="Send Messages" icon="paper-plane" href="/agents/send-message">
+    Send iMessages and emails via AppleScript with a confirmation prompt
+  </Card>
+</CardGroup>
+
+## How it works
+
+The skill reads directly from macOS's local SQLite databases — no cloud sync, no third-party APIs. Your messages never leave your Mac (beyond what Claude Code normally processes).
+
+```
+/imessage-mail who texted me
+/imessage-mail texts with Sarah
+/imessage-mail search "project deadline"
+/imessage-mail email
+/imessage-mail send a text to Mike saying I'm running late
+/imessage-mail find attachments from David
+```
+
+<Note>
+This skill requires **Full Disk Access** granted to your terminal application in macOS System Settings. See [Requirements](/requirements) for setup details.
+</Note>
+
+## Privacy
+
+All database queries run entirely on your Mac. No message content, contacts, or email data is sent to any external service beyond what Claude Code normally processes. The send functionality uses AppleScript to control Messages.app and Mail.app locally.

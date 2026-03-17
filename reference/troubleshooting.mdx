@@ -1,0 +1,179 @@
+---
+title: "Troubleshooting"
+description: "Common issues and solutions for the iMessage & Mail skill"
+---
+
+<AccordionGroup>
+
+  <Accordion title="Permission errors">
+
+    ### `operation not permitted` when querying databases
+
+    The skill queries SQLite databases in `~/Library/` that macOS protects under the Full Disk Access entitlement. If you see an error like:
+
+    ```
+    Error: unable to open database file
+    ```
+
+    or
+
+    ```
+    operation not permitted
+    ```
+
+    **Fix**: Grant Full Disk Access to your terminal application:
+
+    1. Open **System Settings → Privacy & Security → Full Disk Access**
+    2. Click the **+** button
+    3. Add your terminal app (Terminal.app, iTerm2, Warp, Ghostty, etc.)
+    4. **Restart the terminal** — permissions take effect after a full restart
+
+    ### AppleScript blocked — Automation permission denied
+
+    If `osascript` fails with a permissions error when trying to send a message:
+
+    ```
+    osascript: OpenScripting framework is not available
+    ```
+
+    or
+
+    ```
+    Not authorized to send Apple events to Messages.
+    ```
+
+    **Fix**: Re-enable Automation permission:
+
+    1. Open **System Settings → Privacy & Security → Automation**
+    2. Find your terminal app
+    3. Enable the toggle for **Messages** and/or **Mail**
+
+    If the toggle is missing, try sending a message again — macOS may re-show the one-time prompt. If not, restart the terminal and try again.
+
+  </Accordion>
+
+  <Accordion title="No results or empty output">
+
+    ### iMessage queries return no rows
+
+    - **Messages.app is not signed into iMessage** — Open Messages.app and sign in with your Apple ID under **Messages → Settings → iMessage**. The `chat.db` database will be empty or absent if iMessage has never been activated.
+    - **Wrong database path** — Confirm the file exists: `ls ~/Library/Messages/chat.db`. If it is missing, Messages.app may not have been set up on this machine.
+
+    ### Mail queries return no rows
+
+    - **Mail.app has no accounts configured** — Open Mail.app and add an account under **Mail → Settings → Accounts**. The `Envelope Index` database will be empty until Mail syncs at least one account.
+    - **Wrong database path (macOS version)** — The path `~/Library/Mail/V10/MailData/Envelope Index` corresponds to macOS 15+. On older macOS versions the `V10` directory may be a different version number (e.g., `V9`, `V8`). Check with:
+
+      ```bash
+      ls ~/Library/Mail/
+      ```
+
+      Use the actual versioned directory found there.
+
+  </Accordion>
+
+  <Accordion title="Send failures">
+
+    ### iMessage send fails — phone number not registered
+
+    AppleScript will fail silently or return an error if the destination phone number is not registered with iMessage (i.e., the recipient uses Android or has iMessage disabled).
+
+    **Symptoms**: No message appears in Messages.app, or an error is returned.
+
+    **Fix**: Verify the number is an iMessage user by checking for a blue bubble in Messages.app. If the recipient uses SMS only, iMessage cannot send to them via this skill.
+
+    ### Email send fails — no accounts configured in Mail.app
+
+    The skill sends email through Mail.app's default outgoing account. If Mail.app has no accounts set up, AppleScript will fail.
+
+    **Fix**: Open Mail.app → **Mail → Settings → Accounts** and add at least one email account.
+
+    ### AppleScript returns no output
+
+    This is **normal and expected** for a successful send. The `osascript` command produces no stdout output on success. If the command exits with code `0` and no error message, the message was sent.
+
+  </Accordion>
+
+  <Accordion title="Rich text messages showing as [Rich Text/Hidden]">
+
+    Some iMessages store content as a binary `NSAttributedString` in the `attributedBody` column rather than the plain `text` column. These appear as `[Rich Text/Hidden]` in skill output.
+
+    **Why this happens**: Formatted messages, messages with mention links, or messages sent from certain apps may use `attributedBody` instead of `text`.
+
+    **How to extract the text manually**:
+
+    ```bash
+    sqlite3 ~/Library/Messages/chat.db "SELECT HEX(attributedBody) FROM message WHERE ROWID = <ROWID>;" | xxd -r -p | strings
+    ```
+
+    This pipeline:
+    1. Retrieves the blob as a hex string from SQLite
+    2. Reverses the hex to binary with `xxd -r -p`
+    3. Extracts printable ASCII strings with `strings`
+
+    The skill automatically runs this extraction for `[Rich Text/Hidden]` messages and batches multiple ROWIDs into a single subagent call for efficiency.
+
+  </Accordion>
+
+  <Accordion title="Contact not resolving">
+
+    ### Name not found in Address Book
+
+    If the skill cannot resolve a name to a phone number or email address, the contact may not be in the macOS Address Book (`AddressBook-v22.abcddb`).
+
+    **Fix**: Open the **Contacts** app and verify the contact exists with the correct name. The skill matches against `ZFIRSTNAME` and `ZLASTNAME` using a case-insensitive `LIKE` query.
+
+    ### Phone number format issues
+
+    iMessage handles store phone numbers in **E.164 format** (e.g., `+15551234567`). The Address Book may store numbers in local formats (e.g., `(555) 123-4567`). The skill matches by the last 7 digits to work around formatting differences:
+
+    ```sql
+    WHERE T2.ZFULLNUMBER LIKE '%1234567'
+    ```
+
+    If a contact still does not resolve, check whether the number in Address Book matches the handle in `chat.db`:
+
+    ```bash
+    sqlite3 ~/Library/Messages/chat.db "SELECT id FROM handle LIMIT 20;"
+    ```
+
+    ```bash
+    sqlite3 ~/Library/Application\ Support/AddressBook/AddressBook-v22.abcddb \
+      "SELECT ZFULLNUMBER FROM ZABCDPHONENUMBER LIMIT 20;"
+    ```
+
+  </Accordion>
+
+  <Accordion title="macOS version compatibility">
+
+    The skill was tested on **macOS 15+ on Apple Silicon**. Most functionality should work on earlier versions of macOS, with the following caveats:
+
+    ### Mail database path
+
+    The Mail database path includes a version directory (`V10`):
+
+    ```
+    ~/Library/Mail/V10/MailData/Envelope Index
+    ```
+
+    On older macOS versions this may be `V9`, `V8`, or another number. Find the correct path with:
+
+    ```bash
+    ls ~/Library/Mail/
+    ```
+
+    ### iMessage timestamp format
+
+    The `message.date` nanosecond format (divide by `1,000,000,000`) applies to recent macOS versions. On older versions, dates may be stored as plain seconds since the Cocoa epoch. If timestamps appear far in the future or past, try querying without the division:
+
+    ```sql
+    datetime(m.date + 978307200, 'unixepoch', 'localtime')
+    ```
+
+    ### Apple Silicon vs Intel
+
+    No known compatibility differences exist between Apple Silicon and Intel Macs for this skill. AppleScript and SQLite queries work identically on both architectures.
+
+  </Accordion>
+
+</AccordionGroup>

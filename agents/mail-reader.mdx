@@ -1,0 +1,251 @@
+---
+title: "Mail Reader"
+description: "Browse, search, and read Apple Mail emails directly"
+---
+
+The Mail Reader agent queries Apple Mail's local `Envelope Index` SQLite database to list, search, and read emails — including full body content from `.emlx` files, attachments, and recipient details.
+
+## When to Use
+
+This agent is triggered by email-specific language:
+
+- "Check my email"
+- "Any emails from John?"
+- "Search my mail for invoices"
+- "Show unread emails"
+
+**Usage patterns:**
+
+```
+/imessage-mail email
+/imessage-mail inbox
+/imessage-mail unread emails
+/imessage-mail emails from John
+/imessage-mail search mail for invoice
+```
+
+## Database
+
+Apple Mail stores email metadata in a SQLite database at:
+
+```
+~/Library/Mail/V10/MailData/Envelope Index
+```
+
+<Warning>
+This database has no `.db` extension. Always quote the path when passing it to `sqlite3`.
+</Warning>
+
+### Key Schema
+
+| Table | Description |
+|-------|-------------|
+| `messages` | Core table — ROWID, sender (FK), subject (FK), date_sent, date_received, mailbox (FK), read, flagged, deleted, size |
+| `addresses` | ROWID, address (email), comment (display name) |
+| `subjects` | ROWID, subject (text) |
+| `mailboxes` | ROWID, url (mailbox path), total_count, unread_count |
+| `recipients` | message (FK), address (FK), type (TO=0, CC=1, BCC=2), position |
+| `attachments` | message (FK), name (filename) |
+| `summaries` | ROWID, summary (AI-generated summary text) |
+
+## Workflows
+
+<Tabs>
+  <Tab title="List Emails">
+
+### List Recent Emails
+
+```sql
+SELECT
+  m.ROWID,
+  a.comment as sender_name,
+  a.address as sender_email,
+  sub.subject,
+  datetime(m.date_received, 'unixepoch', 'localtime') as received,
+  CASE WHEN m.read = 1 THEN 'Read' ELSE 'UNREAD' END as status,
+  m.flagged
+FROM messages m
+LEFT JOIN addresses a ON m.sender = a.ROWID
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+WHERE m.deleted = 0
+ORDER BY m.date_received DESC
+LIMIT 20;
+```
+
+### List Unread Emails Only
+
+```sql
+SELECT
+  m.ROWID,
+  a.comment as sender_name,
+  a.address as sender_email,
+  sub.subject,
+  datetime(m.date_received, 'unixepoch', 'localtime') as received
+FROM messages m
+LEFT JOIN addresses a ON m.sender = a.ROWID
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+WHERE m.deleted = 0 AND m.read = 0
+ORDER BY m.date_received DESC
+LIMIT 20;
+```
+
+### Filter by Mailbox
+
+List available mailboxes:
+
+```sql
+SELECT ROWID, url, total_count, unread_count
+FROM mailboxes
+WHERE total_count > 0
+ORDER BY total_count DESC;
+```
+
+Filter messages to a specific mailbox (e.g., INBOX):
+
+```sql
+SELECT
+  m.ROWID,
+  a.comment as sender_name,
+  a.address as sender_email,
+  sub.subject,
+  datetime(m.date_received, 'unixepoch', 'localtime') as received
+FROM messages m
+LEFT JOIN addresses a ON m.sender = a.ROWID
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+WHERE m.mailbox = (SELECT ROWID FROM mailboxes WHERE url LIKE '%INBOX%' LIMIT 1)
+  AND m.deleted = 0
+ORDER BY m.date_received DESC
+LIMIT 20;
+```
+
+  </Tab>
+  <Tab title="Search Emails">
+
+### Search by Subject
+
+```sql
+SELECT
+  m.ROWID,
+  a.comment as sender_name,
+  a.address as sender_email,
+  sub.subject,
+  datetime(m.date_received, 'unixepoch', 'localtime') as received,
+  CASE WHEN m.read = 1 THEN 'Read' ELSE 'UNREAD' END as status
+FROM messages m
+LEFT JOIN addresses a ON m.sender = a.ROWID
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+WHERE sub.subject LIKE '%<search_term>%'
+  AND m.deleted = 0
+ORDER BY m.date_received DESC
+LIMIT 20;
+```
+
+### Search by Sender Name or Address
+
+```sql
+SELECT
+  m.ROWID,
+  a.comment as sender_name,
+  a.address as sender_email,
+  sub.subject,
+  datetime(m.date_received, 'unixepoch', 'localtime') as received,
+  CASE WHEN m.read = 1 THEN 'Read' ELSE 'UNREAD' END as status
+FROM messages m
+LEFT JOIN addresses a ON m.sender = a.ROWID
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+WHERE (a.address LIKE '%<search_term>%' OR a.comment LIKE '%<search_term>%')
+  AND m.deleted = 0
+ORDER BY m.date_received DESC
+LIMIT 20;
+```
+
+  </Tab>
+  <Tab title="Read Email">
+
+### Get Email Details (Recipients + Attachments)
+
+Query recipients with their role (To, CC, BCC):
+
+```sql
+SELECT
+  a.comment as name,
+  a.address as email,
+  CASE r.type WHEN 0 THEN 'To' WHEN 1 THEN 'CC' WHEN 2 THEN 'BCC' END as recipient_type
+FROM recipients r
+JOIN addresses a ON r.address = a.ROWID
+WHERE r.message = <MESSAGE_ROWID>
+ORDER BY r.type, r.position;
+```
+
+Query attachments:
+
+```sql
+SELECT name FROM attachments WHERE message = <MESSAGE_ROWID>;
+```
+
+### Get Email Body Content
+
+The `Envelope Index` only stores metadata — not the email body. The actual content lives in `.emlx` files on disk.
+
+**Step 1:** Locate the file:
+
+```bash
+find ~/Library/Mail/V10 -name "<MESSAGE_ROWID>.emlx" -o -name "<MESSAGE_ROWID>.partial.emlx" 2>/dev/null | head -1
+```
+
+**Step 2:** Read the content (the first line of an `.emlx` file is a byte count and is skipped):
+
+```bash
+cat "$(find ~/Library/Mail/V10 -name '<MESSAGE_ROWID>.emlx' 2>/dev/null | head -1)" | tail -n +2
+```
+
+**Step 3 (HTML emails):** Strip HTML tags to extract readable plain text:
+
+```bash
+cat "$(find ~/Library/Mail/V10 -name '<MESSAGE_ROWID>.emlx' 2>/dev/null | head -1)" | tail -n +2 | sed -n '/<body/,/<\/body>/p' | sed 's/<[^>]*>//g'
+```
+
+  </Tab>
+  <Tab title="AI Summaries">
+
+### Get AI Summaries (if available)
+
+Apple Mail may store AI-generated email summaries in the `summaries` table:
+
+```sql
+SELECT
+  sub.subject,
+  sum.summary
+FROM messages m
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+LEFT JOIN summaries sum ON m.summary = sum.ROWID
+WHERE m.summary IS NOT NULL AND sum.summary IS NOT NULL
+ORDER BY m.date_received DESC
+LIMIT 10;
+```
+
+  </Tab>
+</Tabs>
+
+## Output Format
+
+```
+## Recent Emails
+
+| Status | From | Subject | Received |
+|--------|------|---------|----------|
+| UNREAD | John Smith (john@example.com) | Re: Project Update | Mar 16, 18:30 |
+| Read | Jane Doe (jane@corp.com) | Q1 Report Attached | Mar 16, 15:20 |
+| UNREAD | GitHub (notifications@github.com) | [repo] New PR #42 | Mar 16, 14:00 |
+
+**Unread**: 3 of 20 shown
+```
+
+When reading a full email, the agent also shows the recipient list (To, CC, BCC) and any attachment filenames before rendering the body content.
+
+## Suggested Follow-ups
+
+- **Reply** — use the Send Message agent: "Want to reply to any of these emails?"
+- **Read more** — "Want me to read the full content of any email?"
+- **Search** — "Want to search for something specific?"
+- **Cross-reference** — use the Attachment Finder to find related iMessage attachments

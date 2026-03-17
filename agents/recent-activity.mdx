@@ -1,0 +1,184 @@
+---
+title: "Recent Activity"
+description: "See who texted or emailed you with message previews and unread counts"
+---
+
+The Recent Activity agent gives you an at-a-glance overview of your most recent iMessage contacts and Apple Mail inbox — with resolved contact names, message previews, and unread counts.
+
+## When to Use
+
+This agent is triggered by natural language like:
+
+- "Who texted me?"
+- "Recent messages"
+- "Latest texts"
+- "Any new emails?"
+- "What did I miss?"
+- "Recent activity"
+
+**Slash commands:**
+
+```
+/imessage-mail recent
+/imessage-mail who texted me
+/imessage-mail latest
+```
+
+## Workflow
+
+<Steps>
+
+### Query iMessage Handles
+
+The agent queries `chat.db` to find the most recently active handles (phone numbers or email addresses used in iMessage), along with message counts split by direction:
+
+```sql
+SELECT
+  h.id,
+  MAX(datetime(m.date / 1000000000 + 978307200, 'unixepoch', 'localtime')) as last_message,
+  COUNT(m.ROWID) as message_count,
+  SUM(CASE WHEN m.is_from_me = 0 THEN 1 ELSE 0 END) as received,
+  SUM(CASE WHEN m.is_from_me = 1 THEN 1 ELSE 0 END) as sent
+FROM message m
+JOIN handle h ON m.handle_id = h.ROWID
+GROUP BY h.id
+ORDER BY MAX(m.date) DESC
+LIMIT 15;
+```
+
+Returns: handle (phone/email), last message timestamp, total count, received count, sent count.
+
+### Query Apple Mail (parallel)
+
+At the same time, a parallel subagent queries the Apple Mail `Envelope Index` database for recent emails:
+
+```sql
+SELECT
+  m.ROWID,
+  a.comment as sender_name,
+  a.address as sender_email,
+  sub.subject,
+  datetime(m.date_received, 'unixepoch', 'localtime') as received,
+  CASE WHEN m.read = 1 THEN 'Read' ELSE 'UNREAD' END as status,
+  m.flagged
+FROM messages m
+LEFT JOIN addresses a ON m.sender = a.ROWID
+LEFT JOIN subjects sub ON m.subject = sub.ROWID
+WHERE m.deleted = 0
+ORDER BY m.date_received DESC
+LIMIT 10;
+```
+
+And the total unread count:
+
+```sql
+SELECT COUNT(*) FROM messages WHERE deleted = 0 AND read = 0;
+```
+
+### Resolve Contact Names from Address Book
+
+For each phone number handle, the agent spawns parallel subagents to look up names in the macOS Address Book database. Phone numbers are matched by their last 7 digits to handle formatting differences:
+
+```sql
+SELECT ZFIRSTNAME, ZLASTNAME
+FROM ZABCDRECORD AS T1
+INNER JOIN ZABCDPHONENUMBER AS T2 ON T1.Z_PK = T2.ZOWNER
+WHERE T2.ZFULLNUMBER LIKE '%<last_7_digits>%'
+LIMIT 1;
+```
+
+For email handles, it looks up by address instead:
+
+```sql
+SELECT ZFIRSTNAME, ZLASTNAME
+FROM ZABCDRECORD AS T1
+INNER JOIN ZABCDEMAILADDRESS AS T2 ON T1.Z_PK = T2.ZOWNER
+WHERE T2.ZADDRESS = '<email>'
+LIMIT 1;
+```
+
+<Note>
+When there are many handles, the agent batches them into 2–3 subagent calls (each resolving 5–7 numbers) rather than one call per handle, for efficiency.
+</Note>
+
+### Fetch Message Previews
+
+For the 5 most recent contacts, the agent fetches the latest message text:
+
+```sql
+SELECT
+  COALESCE(m.text, CASE WHEN m.attributedBody IS NOT NULL THEN '[Rich Text]' ELSE '[No Text]' END)
+FROM message m
+JOIN handle h ON m.handle_id = h.ROWID
+WHERE h.id LIKE '%<digits>'
+ORDER BY m.date DESC
+LIMIT 1;
+```
+
+If the result is `[Rich Text]`, the actual text is extracted from the binary `attributedBody` field:
+
+```bash
+sqlite3 ~/Library/Messages/chat.db "
+SELECT HEX(attributedBody) FROM message
+WHERE handle_id = (SELECT ROWID FROM handle WHERE id LIKE '%<digits>')
+ORDER BY date DESC LIMIT 1;" | xxd -r -p | strings | head -5
+```
+
+### Group Chat Activity (optional)
+
+If the user asks about group chats or "all recent" activity:
+
+```sql
+SELECT
+  c.display_name,
+  c.chat_identifier,
+  MAX(datetime(m.date / 1000000000 + 978307200, 'unixepoch', 'localtime')) as last_message,
+  COUNT(m.ROWID) as message_count
+FROM chat c
+JOIN chat_message_join cmj ON c.ROWID = cmj.chat_id
+JOIN message m ON cmj.message_id = m.ROWID
+WHERE c.display_name IS NOT NULL AND c.display_name != ''
+GROUP BY c.ROWID
+ORDER BY MAX(m.date) DESC
+LIMIT 10;
+```
+
+</Steps>
+
+## Output Format
+
+Results are presented as two separate sections — iMessages and Emails — each as a formatted table:
+
+```
+## Recent iMessages
+
+| Contact | Last Message | Messages | Preview |
+|---------|-------------|----------|---------|
+| John Smith (+1234567890) | 2026-03-16 14:30 | 45 (↓23 ↑22) | "Hey, are we still on for..." |
+| Jane Doe (+0987654321) | 2026-03-16 12:15 | 12 (↓8 ↑4) | "Thanks for sending that!" |
+| +1555123456 | 2026-03-15 09:00 | 3 (↓3 ↑0) | [Attachment: image] |
+
+### Group Chats
+| Name | Last Activity | Messages |
+|------|--------------|----------|
+| Family Chat | 2026-03-16 13:00 | 128 |
+
+---
+
+## Recent Emails (5 unread)
+
+| Status | From | Subject | Received |
+|--------|------|---------|----------|
+| UNREAD | John Smith (john@example.com) | Re: Project Update | Mar 16, 18:30 |
+| Read | GitHub (noreply@github.com) | [repo] PR #42 merged | Mar 16, 17:00 |
+| UNREAD | Jane Doe (jane@corp.com) | Q1 Report | Mar 16, 15:20 |
+```
+
+## Suggested Follow-ups
+
+After viewing the activity overview, you can:
+
+- **Reply to a message** — ask the Send Message agent: "Want to reply to any of these messages or emails?"
+- **Read a full conversation** — ask the Conversation Reader: "Want to see the full conversation with any of these contacts?"
+- **Find attachments** — ask the Attachment Finder: "Want to see attachments from any of these conversations?"
+- **Read an email in full** — ask the Mail Reader: "Want to read any of these emails in full?"

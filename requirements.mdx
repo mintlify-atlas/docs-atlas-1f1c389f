@@ -1,0 +1,112 @@
+---
+title: "Requirements"
+description: "macOS permissions and prerequisites for the iMessage & Mail skill"
+---
+
+The skill reads protected system databases and controls macOS apps via AppleScript. This page covers every prerequisite and how to configure each one.
+
+## System requirements
+
+| Requirement | Details |
+|---|---|
+| **macOS** | macOS 15 or later (tested on Apple Silicon) |
+| **Claude Code** | Claude Code CLI installed and configured |
+| **Messages.app** | Signed into iMessage |
+| **Mail.app** | At least one email account configured |
+
+## Permissions
+
+<Warning>
+  **Full Disk Access is required.** Without it, the skill cannot read the Messages or Mail databases and all queries will fail. This is a macOS system-level restriction — there is no workaround.
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="Full Disk Access">
+    The skill reads the following SQLite databases, which macOS places behind the Full Disk Access permission gate:
+
+    - `~/Library/Messages/chat.db`
+    - `~/Library/Mail/V10/MailData/Envelope Index`
+    - `~/Library/Application Support/AddressBook/AddressBook-v22.abcddb`
+
+    **How to grant Full Disk Access:**
+
+    1. Open **System Settings** > **Privacy & Security** > **Full Disk Access**
+    2. Click the **+** button
+    3. Navigate to and select your terminal application
+    4. Restart the terminal for the change to take effect
+
+    Common terminal apps to add:
+
+    | App | Typical location |
+    |---|---|
+    | Terminal.app | `/System/Applications/Utilities/Terminal.app` |
+    | iTerm2 | `/Applications/iTerm.app` |
+    | Warp | `/Applications/Warp.app` |
+    | Ghostty | `/Applications/Ghostty.app` |
+
+    <Note>
+      If you use a terminal inside VS Code or another editor, you may need to grant Full Disk Access to that editor's app bundle instead of (or in addition to) a standalone terminal.
+    </Note>
+  </Accordion>
+
+  <Accordion title="AppleScript automation (send functionality)">
+    Sending iMessages and emails requires your terminal to control **Messages.app** and **Mail.app** via AppleScript. macOS prompts for this permission the first time a send command runs.
+
+    **What to expect:**
+
+    - macOS displays a one-time dialog: *"Terminal wants to control Messages. Allow?"*
+    - Click **Allow** to grant the permission
+    - The prompt appears separately for Messages.app and Mail.app the first time each is used
+    - Once allowed, sending works without further prompts
+
+    **If you denied the prompt:**
+
+    1. Open **System Settings** > **Privacy & Security** > **Automation**
+    2. Find your terminal app in the list
+    3. Enable the checkbox next to **Messages** and/or **Mail**
+  </Accordion>
+
+  <Accordion title="Messages.app — iMessage sign-in">
+    The skill reads from `~/Library/Messages/chat.db`, which is only populated when Messages.app is signed into an iMessage account.
+
+    **To verify sign-in:**
+
+    1. Open **Messages.app**
+    2. Go to **Messages** > **Settings** > **iMessage**
+    3. Confirm your Apple ID is shown and iMessage is enabled
+
+    <Note>
+      SMS messages delivered via iPhone continuity (green bubbles) may also appear in `chat.db` depending on your setup.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Mail.app — account configuration">
+    The skill reads from the Apple Mail `Envelope Index` database, which requires at least one account to be configured in Mail.app.
+
+    **To verify account setup:**
+
+    1. Open **Mail.app**
+    2. Go to **Mail** > **Settings** > **Accounts**
+    3. Confirm at least one account is listed and active
+
+    Mail.app must have synced locally for messages to appear in the database. If you have a large mailbox, allow time for the initial sync to complete.
+  </Accordion>
+</AccordionGroup>
+
+## Database paths
+
+The skill queries three local SQLite databases directly. No network requests are made to read message data.
+
+| Database | Path | Contents |
+|---|---|---|
+| Messages | `~/Library/Messages/chat.db` | iMessage and SMS history, attachments, handles |
+| Mail | `~/Library/Mail/V10/MailData/Envelope Index` | Email metadata, senders, subjects, mailboxes |
+| Contacts | `~/Library/Application Support/AddressBook/AddressBook-v22.abcddb` | Names, phone numbers, email addresses |
+
+<Note>
+  All database access is read-only. The skill does not write to or modify any of these databases. Sending messages uses AppleScript to control Messages.app and Mail.app rather than writing to the databases directly.
+</Note>
+
+## Privacy
+
+The skill runs entirely on your Mac. No message content, contact data, or email metadata is sent to any external service beyond what Claude Code normally processes during a session.

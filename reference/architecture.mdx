@@ -1,0 +1,112 @@
+---
+title: "Architecture"
+description: "How the skill routes requests, queries databases, and uses parallel subagents"
+---
+
+## Overview
+
+The iMessage & Mail skill is structured as an **orchestrator + specialist agents** pattern:
+
+- **`SKILL.md`** — the orchestrator. It classifies the user's intent and routes to the correct agent file.
+- **`agents/`** — specialist agents, each responsible for one capability. The orchestrator reads the matched agent file and follows its workflow step-by-step.
+
+```
+imessage-mail/
+├── SKILL.md                    # Orchestrator — intent classification and routing
+└── agents/
+    ├── recent-activity.md      # Recent contacts and email overview
+    ├── conversation-reader.md  # Full message history for a contact
+    ├── message-search.md       # Cross-source keyword search
+    ├── attachment-finder.md    # Find files and media from messages/emails
+    ├── mail-reader.md          # Apple Mail database queries
+    └── send-message.md         # Send iMessages and emails via AppleScript
+```
+
+## Execution Flow
+
+<Steps>
+  <Step title="Classify intent">
+    SKILL.md reads the user's input and matches it against the intent routing table.
+  </Step>
+  <Step title="Read the agent file">
+    The orchestrator reads the matched agent `.md` file from `~/.claude/skills/imessage-mail/agents/`.
+  </Step>
+  <Step title="Execute SQL or AppleScript">
+    The agent's workflow runs `sqlite3` queries against local macOS databases, or `osascript` commands to control Messages.app or Mail.app.
+  </Step>
+  <Step title="Present results">
+    Results are formatted into clean tables or conversational output, with contact names resolved from the Address Book.
+  </Step>
+</Steps>
+
+## Intent Routing Table
+
+The orchestrator classifies input against the following table and reads the matched agent file:
+
+| Input Pattern | Agent File | Description |
+|---|---|---|
+| "recent messages", "who texted me", "latest texts" | `agents/recent-activity.md` | List recent unique iMessage contacts with names |
+| Contact name or phone number + "messages"/"texts" | `agents/conversation-reader.md` | Read iMessage history for a specific contact |
+| "find attachment", "photos from", "files from" | `agents/attachment-finder.md` | Find attachments in iMessage conversations |
+| "search for", "find messages about", keyword search | `agents/message-search.md` | Full-text search across all iMessages |
+| "email", "mail", "inbox", "unread emails" | `agents/mail-reader.md` | Read, search, and inspect Apple Mail emails |
+| "send", "text", "reply", "respond", "tell them" | `agents/send-message.md` | Send iMessages or emails via AppleScript |
+
+## Input Detection Logic
+
+The orchestrator applies these rules in order to determine which agent to invoke:
+
+1. **Send/reply keywords** — If input contains `send`, `text [someone]`, `reply`, `respond`, `tell them`, `message [someone] saying`, route to **send-message**.
+2. **Email/mail keywords** — If input contains `email`, `mail`, `inbox`, `unread email`, `newsletter`, or sender addresses with `@`, route to **mail-reader** (unless also contains send intent, then route to **send-message**).
+3. **Phone number detection** — If input contains a phone number pattern (digits, `+`, dashes, parens), check for send intent first; otherwise extract digits and route to **conversation-reader**.
+4. **Attachment keywords** — If input contains `attachment`, `photo`, `image`, `file`, `video`, `pdf`, route to **attachment-finder**.
+5. **Search keywords** — If input contains `search`, `find messages`, `look for`, route to **message-search**.
+6. **Recent/activity keywords** — If input contains `recent`, `latest`, `who texted`, `new messages`, route to **recent-activity**.
+7. **Contact name** — If input is a person's name (possibly with `messages`/`texts`), route to **conversation-reader** (resolve name first).
+8. **Ambiguous "messages from [name]"** — If unclear whether the user means iMessage or email, check both — spawn **conversation-reader** and **mail-reader** subagents in parallel via the Agent tool, then combine results.
+9. **Default** — Route to **recent-activity**.
+
+## Parallel Subagents
+
+The skill uses the Agent tool to spawn parallel subagents for performance-sensitive operations.
+
+### Contact Resolution
+
+When many phone number handles need to be resolved to names, they are batched into 2–3 subagent calls (each resolving 5–7 numbers) running in parallel rather than one per handle. Each subagent queries `AddressBook-v22.abcddb` for the matching `ZFIRSTNAME` and `ZLASTNAME`.
+
+### Cross-Source Search
+
+When searching for messages from a specific person (ambiguous source), two parallel subagents run simultaneously:
+
+- One searches iMessage via **conversation-reader**
+- One searches Apple Mail via **mail-reader**
+
+Results are merged and presented chronologically.
+
+### Rich Text Extraction
+
+When multiple iMessages have `[Rich Text/Hidden]` content (stored in `attributedBody` rather than `text`), a single subagent processes all ROWIDs in one batch rather than querying one at a time.
+
+## Rich Text / attributedBody Handling
+
+Many iMessages store content as an `NSAttributedString` binary blob in the `attributedBody` column rather than the plain `text` column. If a message appears empty or displays as `[Rich Text/Hidden]`, the actual text can be extracted with:
+
+```bash
+sqlite3 ~/Library/Messages/chat.db "SELECT HEX(attributedBody) FROM message WHERE ROWID = <ROWID>;" | xxd -r -p | strings
+```
+
+This pipeline decodes the hex-encoded blob, reverses it to binary with `xxd`, and extracts printable strings. The skill substitutes `[Rich Text/Hidden]` labels in its output with the extracted content after running this command.
+
+## Timestamp Conversion
+
+iMessage stores dates using the **Mac CoreData (Cocoa) epoch**: seconds since January 1, 2001. On recent macOS versions, `message.date` is stored in **nanoseconds**, so the conversion formula divides by `1,000,000,000` before adding the epoch offset of `978307200` seconds (the difference between the Cocoa epoch and the Unix epoch):
+
+```sql
+datetime(m.date / 1000000000 + 978307200, 'unixepoch', 'localtime')
+```
+
+Apple Mail uses the standard **Unix epoch** (seconds since January 1, 1970) for `date_received` and `date_sent`, so no offset is needed:
+
+```sql
+datetime(m.date_received, 'unixepoch', 'localtime')
+```
